@@ -1,0 +1,37 @@
+# --- Go ---
+/esp32-ph
+/dist/
+*.exe
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# --- Fyne packaging ---
+/fyne-cross/
+*.app/
+*.dmg
+/Icon.png.go
+fyne.json
+
+# --- Firmware build cruft ---
+# Loose MicroPython download in repo root (canonical copy: internal/assets/micropython.bin)
+/ESP32_GENERIC-*.bin
+# Python bytecode (e.g. from local py_compile syntax checks)
+__pycache__/
+*.pyc
+
+# --- Local tooling ---
+# esptool dev venv
+/.venv/
+# throwaway probe command (used during hardware bring-up)
+/cmd/probe/
+
+# --- Editors / IDE ---
+/.idea/
+/.vscode/
+*.swp
+
+# --- OS ---
+.DS_Store
+Thumbs.db
