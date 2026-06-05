@@ -1,0 +1,53 @@
+name: release
+
+# Baut bei einem Tag-Push (vX.Y.Z) auf macOS/Linux/Windows native Binaries und
+# haengt sie an ein GitHub-Release. Kein Docker, kein Icon noetig (reines
+# `go build`). Fuer signierte .app/.exe-Bundles spaeter fyne-cross/Taskfile nutzen.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            asset: esp32-ph-macos-arm64
+          - os: ubuntu-latest
+            asset: esp32-ph-linux-amd64
+          - os: windows-latest
+            asset: esp32-ph-windows-amd64.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # Fyne braucht auf Linux OpenGL/X11-Header fuer CGo.
+      - name: Linux GUI-Abhaengigkeiten
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev xorg-dev libxkbcommon-dev
+
+      - name: Build
+        shell: bash
+        run: |
+          mkdir -p dist
+          go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/${{ matrix.asset }}" .
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.asset }}
+          generate_release_notes: true
