@@ -9,10 +9,10 @@
 #   - GNSS-Position (CGNSPWR/CGNSINF)
 #   - Datenkontext aktivieren (CNACT) + HTTP-POST (SHCONF/SHCONN/SHBOD/SHREQ)
 #
-# STATUS: Status/GPS am echten Board verifiziert. Der HTTP-POST-Pfad
-# (data_connect + http_post) ist gegen die SIM7000-SH-Spezifikation
-# implementiert, aber am Teststandort NICHT verifizierbar (kein Datenkontext:
-# 2G ohne 1NCE-Daten / LTE-M ohne Abdeckung). Im Feld mit Datenempfang testen.
+# STATUS: Am echten Board (LTE-M, 1NCE-SIM, APN sensor.net) verifiziert:
+# Status/Netz, Netzzeit (NITZ via CTZU), Datenkontext (CNACT) und HTTPS-POST
+# (SH-Engine) gegen die Produktion -> Backend hat den Wert gespeichert.
+# GNSS-Pfad ungetestet (keine GPS-Antenne; Zeit kommt aus dem Netz).
 
 import time
 

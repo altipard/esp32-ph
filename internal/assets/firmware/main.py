@@ -15,8 +15,9 @@
 #   POST <ingest_url>  Header X-Device-ID/X-API-Key/X-Tenant-ID
 #   Body {"m": [["sensor-id", <unix_ts>, <wert_x10>], ...]}
 #
-# STATUS: UNGETESTET auf Hardware. Struktur + AT/PPP-Sequenzen folgen der
-# SIM7000-/MicroPython-Doku, brauchen aber Bring-up am echten Board.
+# STATUS: LTE-Pfad am echten Board verifiziert (Netzzeit -> Datenkontext ->
+# HTTPS-POST -> Wert im Backend). Der DS18B20-Lesepfad ist noch ungetestet
+# (kein Sensor angeschlossen).
 
 import json
 import time
