@@ -3,7 +3,8 @@
 # Quelle: LILYGO/TinyGSM T-SIM7000G Referenz. WICHTIG: GPIO4 = Modem-PWRKEY,
 # darf NICHT fuer Sensoren benutzt werden (haeufiger Anfaengerfehler).
 #
-# STATUS: UNGETESTET auf Hardware. Pins gegen das eigene Board verifizieren.
+# STATUS: Modem-Pins am echten Board verifiziert. Sensor-Pin (DS18B20) noch
+# nicht mit angeschlossenem Sensor geprueft.
 
 # --- Mobilfunk-Modem (SIM7000G) ---
 MODEM_UART = 1
