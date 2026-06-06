@@ -66,9 +66,14 @@ class Modem:
             pass
 
     def configure_network(self, mode="auto"):
-        """Setzt bevorzugten Funk-Modus (auto/ltem/nbiot/gsm)."""
+        """Setzt Funk-Modus (auto/ltem/nbiot/gsm) und aktiviert automatische
+        Netzzeit (NITZ via CTZU=1).
+
+        CTZU ist persistent (Modem-NVRAM), wird aber bei jedem Boot idempotent
+        gesetzt — sonst liefert AT+CCLK Jahr 1980 und es gibt ohne GPS-Antenne
+        keine Zeitquelle (NTP ist ueber den 1NCE-APN blockiert)."""
         cnmp, cmnb = _NET_MODES.get(mode, _NET_MODES["auto"])
-        for cmd in ("AT+CNMP=%d" % cnmp, "AT+CMNB=%d" % cmnb):
+        for cmd in ("AT+CTZU=1", "AT+CNMP=%d" % cnmp, "AT+CMNB=%d" % cmnb):
             try:
                 self.at(cmd, timeout_ms=3000)
             except OSError:
@@ -285,8 +290,25 @@ class Modem:
         except ValueError:
             return None
 
+    def sync_time(self, wait_s=45):
+        """Setzt die ESP32-RTC (UTC) aus der Netzzeit (NITZ). Wartet bis eine
+        gueltige Zeit vorliegt. True bei Erfolg.
+
+        Netzzeit ist fuer das Feldgeraet ohne GPS-Antenne die Zeitquelle.
+        configure_network() muss vorher CTZU=1 gesetzt haben."""
+        deadline = time.ticks_add(time.ticks_ms(), wait_s * 1000)
+        while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+            if self._cclk_to_rtc():
+                return True
+            time.sleep_ms(2000)
+        return False
+
     def _cclk_to_rtc(self):
-        """Setzt RTC aus AT+CCLK. Verwirft unplausible Jahre (<2020)."""
+        """Setzt die RTC auf UTC aus AT+CCLK. Verwirft unplausible Jahre (<2020).
+
+        CCLK liefert Lokalzeit plus Zeitzonen-Offset in Viertelstunden
+        ("yy/MM/dd,hh:mm:ss±zz"). Der Offset wird abgezogen, damit die RTC auf
+        UTC steht und unix_now() echte Unix-UTC-Timestamps liefert."""
         try:
             resp = self.at("AT+CCLK?", timeout_ms=3000)
         except OSError:
@@ -295,7 +317,7 @@ class Modem:
         b = resp.find('"', a + 1)
         if a < 0 or b <= a:
             return False
-        s = resp[a + 1:b]  # "yy/MM/dd,hh:mm:ss+zz"
+        s = resp[a + 1:b]  # "yy/MM/dd,hh:mm:ss±zz" (zz = Viertelstunden)
         try:
             date, rest = s.split(",")
             yy, mo, dd = date.split("/")
@@ -303,10 +325,16 @@ class Modem:
             year = 2000 + int(yy)
             if year < 2020:  # NITZ nicht gesetzt -> unbrauchbar
                 return False
+            tz = rest[8:].strip()
+            tz_quarters = int(tz) if tz else 0
             import machine
-            machine.RTC().datetime((year, int(mo), int(dd), 0, int(hh), int(mm), int(ss), 0))
+            # Lokalzeit -> Sekunden (naiv) -> UTC -> RTC.
+            local = time.mktime((year, int(mo), int(dd),
+                                 int(hh), int(mm), int(ss), 0, 0))
+            t = time.localtime(local - tz_quarters * 15 * 60)
+            machine.RTC().datetime((t[0], t[1], t[2], 0, t[3], t[4], t[5], 0))
             return True
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, OverflowError):
             return False
 
     # --- HTTP-POST (SIM7000 SH-Engine) -------------------------------------
