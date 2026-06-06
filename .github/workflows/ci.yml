@@ -1,0 +1,59 @@
+name: ci
+
+# Baut bei jedem Push/PR die Go-App nativ auf macOS/Linux/Windows, laeuft vet +
+# test und laedt die Binaries als Build-Artefakt hoch (in der Actions-Run, ~90
+# Tage abrufbar). Veroeffentlichte Releases macht release.yml bei einem Tag.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            asset: esp32-ph-macos-arm64
+          - os: ubuntu-latest
+            asset: esp32-ph-linux-amd64
+          - os: windows-latest
+            asset: esp32-ph-windows-amd64.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # Fyne braucht auf Linux OpenGL/X11-Header fuer CGo.
+      - name: Linux GUI-Abhaengigkeiten
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev xorg-dev libxkbcommon-dev
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        shell: bash
+        run: |
+          mkdir -p dist
+          go build -ldflags "-s -w -X main.version=${GITHUB_SHA::7}" -o "dist/${{ matrix.asset }}" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
