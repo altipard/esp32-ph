@@ -320,4 +320,5 @@ def run():
     machine.deepsleep(interval * 1000)
 
 
-run()
+if __name__ == "__main__":
+    run()
