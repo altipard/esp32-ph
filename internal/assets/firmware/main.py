@@ -12,7 +12,7 @@
 # Beim Deep-Sleep-Wakeup (Messzyklus) bleibt der Hotspot aus -> Strom sparen.
 #
 # Ingest-Protokoll (siehe water_monitoring/views_ingest.py):
-#   POST <ingest_url>  Header X-Device-ID/X-API-Key/X-Tenant-ID
+#   POST <ingest_url>  Header X-Device-ID/X-API-Key (Tenant via Subdomain)
 #   Body {"m": [["sensor-id", <unix_ts>, <wert_x10>], ...]}
 #
 # STATUS: LTE-Pfad am echten Board verifiziert (Netzzeit -> Datenkontext ->
@@ -32,6 +32,12 @@ EPOCH_OFFSET = 946684800  # RTC zaehlt ab 2000, Unix ab 1970
 TIME_VALID = 1_600_000_000  # > 2020 => RTC gesetzt
 TIME_RETRY_S = 60  # kurzer Deep-Sleep, wenn keine Zeit ermittelbar war
 
+# Ingest-URL wird aus dem Vereinskuerzel (tenant) gebaut:
+#   https://<tenant>.petri-heil.online/water-monitoring/api/v1/ingest/
+# Der Tenant wird serverseitig ueber die Subdomain aufgeloest -> kein Header.
+INGEST_HOST_SUFFIX = ".petri-heil.online"
+INGEST_PATH = "/water-monitoring/api/v1/ingest/"
+
 _DEFAULTS = {
     "ap_password": "petriheil",
     "transport": "auto",          # "lte" | "wifi" | "auto"
@@ -40,10 +46,10 @@ _DEFAULTS = {
     "apn": "",
     "apn_user": "",
     "apn_pass": "",
-    "ingest_url": "",
+    "tenant": "",                 # Vereinskuerzel (Subdomain), z. B. "fvw"
+    "ingest_url": "",             # optionaler Dev-Override; sonst aus tenant gebaut
     "device_id": "",
     "api_key": "",
-    "tenant_id": "",
     "network_mode": "auto",
     "measure_interval_s": 15 * 60,
     "batch_size": 4,
@@ -91,8 +97,20 @@ def is_cold_boot():
     return machine.reset_cause() != machine.DEEPSLEEP_RESET
 
 
+def resolve_ingest_url(cfg):
+    """Liefert die Ingest-URL. Ein explizit gesetztes ingest_url (Dev/Override)
+    hat Vorrang, sonst wird sie aus dem Vereinskuerzel (tenant) gebaut."""
+    url = cfg.get("ingest_url")
+    if url:
+        return url
+    tenant = cfg.get("tenant", "").strip()
+    if not tenant:
+        return ""
+    return "https://%s%s%s" % (tenant, INGEST_HOST_SUFFIX, INGEST_PATH)
+
+
 def is_configured(cfg):
-    return bool(cfg.get("device_id") and cfg.get("ingest_url"))
+    return bool(cfg.get("device_id") and resolve_ingest_url(cfg))
 
 
 def select_transport(cfg):
@@ -110,11 +128,10 @@ def _post(cfg, measurements):
         "Content-Type": "application/json",
         "X-Device-ID": cfg["device_id"],
         "X-API-Key": cfg["api_key"],
-        "X-Tenant-ID": cfg["tenant_id"],
     }
     resp = None
     try:
-        resp = urequests.post(cfg["ingest_url"], data=json.dumps({"m": measurements}), headers=headers)
+        resp = urequests.post(resolve_ingest_url(cfg), data=json.dumps({"m": measurements}), headers=headers)
         ok = resp.status_code in (200, 201)
         print("Ingest:", resp.status_code, resp.text)
         return ok
@@ -229,10 +246,9 @@ def _send_via_lte(cfg, measurements):
             "Content-Type": "application/json",
             "X-Device-ID": cfg["device_id"],
             "X-API-Key": cfg["api_key"],
-            "X-Tenant-ID": cfg["tenant_id"],
         }
         payload = json.dumps({"m": measurements})
-        code = m.http_post(cfg["ingest_url"], headers, payload)
+        code = m.http_post(resolve_ingest_url(cfg), headers, payload)
         print("Ingest HTTP:", code)
         return code in (200, 201)
     finally:

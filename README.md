@@ -108,10 +108,10 @@ sich der Sensor im Feld ohne PC umstellen.
 | `transport` | `lte` | `lte` \| `wifi` \| `auto` |
 | `apn` | `sensor.net` | Mobilfunk-APN (1NCE = `sensor.net`) |
 | `network_mode` | `auto` | `auto` \| `ltem` \| `nbiot` \| `gsm` |
-| `ingest_url` | `https://fvw.petri-heil.online/water-monitoring/api/v1/ingest/` | Backend-Endpoint (Bindestrich, Tenant-Subdomain!) |
+| `tenant` | `fvw` | Vereinskürzel — die Ingest-URL wird daraus gebaut |
 | `device_id` | `fvw-s001` | Geräte-ID (im Backend angelegt) |
 | `api_key` | *(aus dem Backend)* | wird beim Anlegen **einmalig** angezeigt |
-| `tenant_id` | *(leer lassen)* | Tenant kommt über die Subdomain — **nicht** ausfüllen |
+| `ingest_url` | *(leer lassen)* | optionaler Dev-Override; sonst aus `tenant` gebaut |
 | `measure_interval_s` | `900` | Messabstand (Sekunden), 900 = 15 min |
 | `batch_size` | `4` | so viele Messungen sammeln, dann senden |
 | `sensor_id` / `type` / `pin` | `temp-1` / `ds18b20` / `32` | muss zum Backend-Sensor passen |
@@ -139,8 +139,9 @@ Im Admin der jeweiligen Vereins-Subdomain (`https://<tenant>.petri-heil.online/a
 3. Mess-Typen sind in der Regel vorhanden; sonst:
    `python manage.py tenant_command create_measurement_types --schema=<tenant>`.
 
-Der Tenant wird über die **Subdomain** des `ingest_url` aufgelöst — daher
-`tenant_id` in der Geräte-Config leer lassen.
+In der Geräte-Config genügt das **Vereinskürzel** (`tenant`, z. B. `fvw`); die
+Firmware baut daraus die URL `https://<tenant>.petri-heil.online/water-monitoring/api/v1/ingest/`.
+Der Tenant wird serverseitig über die **Subdomain** aufgelöst.
 
 ---
 
