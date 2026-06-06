@@ -29,6 +29,7 @@ import sensors
 CONFIG_PATH = "config.json"
 EPOCH_OFFSET = 946684800  # RTC zaehlt ab 2000, Unix ab 1970
 TIME_VALID = 1_600_000_000  # > 2020 => RTC gesetzt
+TIME_RETRY_S = 60  # kurzer Deep-Sleep, wenn keine Zeit ermittelbar war
 
 _DEFAULTS = {
     "ap_password": "petriheil",
@@ -45,7 +46,7 @@ _DEFAULTS = {
     "network_mode": "auto",
     "measure_interval_s": 15 * 60,
     "batch_size": 4,
-    "gps_enabled": True,
+    "gps_enabled": False,
     "sensors": [{"sensor_id": "temp-1", "type": "ds18b20", "pin": board.DEFAULT_ONEWIRE_PIN}],
 }
 
@@ -140,7 +141,13 @@ def _wifi_up(cfg, timeout_s=20):
 
 
 def _sync_time():
+    """NTP-Zeit (nur WLAN/Bench — am 1NCE-APN ist UDP/123 blockiert)."""
     import ntptime
+    ntptime.host = "pool.ntp.org"
+    try:
+        ntptime.timeout = 5  # nicht in jedem Build vorhanden
+    except AttributeError:
+        pass
     for _ in range(3):
         try:
             ntptime.settime()
@@ -150,14 +157,46 @@ def _sync_time():
     return False
 
 
+def ensure_time(cfg):
+    """Stellt eine gueltige RTC (UTC) sicher, BEVOR gemessen und gestempelt
+    wird — sonst tragen Messwerte falsche Timestamps und der Ingest verwirft
+    sie (Backend toleriert nur +/-24h Drift).
+
+    Die RTC ueberlebt den Deep-Sleep, daher ist das nur nach Power-Verlust
+    noetig. Quelle: Netzzeit (LTE/NITZ), bzw. NTP nur im WLAN-Bench-Betrieb."""
+    if unix_now() >= TIME_VALID:
+        return True
+    transport = select_transport(cfg)
+    if transport == "wifi":
+        wlan = _wifi_up(cfg)
+        if wlan:
+            try:
+                _sync_time()
+            finally:
+                try:
+                    wlan.disconnect()
+                    wlan.active(False)
+                except OSError:
+                    pass
+    else:
+        from modem import Modem
+        m = Modem()
+        if m.power_on():
+            try:
+                m.configure_network(cfg.get("network_mode", "auto"))
+                if m.sim_ready():
+                    m.sync_time()
+            finally:
+                m.power_off()
+    return unix_now() >= TIME_VALID
+
+
 def _send_via_wifi(cfg, measurements):
     wlan = _wifi_up(cfg)
     if not wlan:
         print("WLAN nicht verbunden")
         return False
     try:
-        if unix_now() < TIME_VALID:
-            _sync_time()
         return _post(cfg, measurements)
     finally:
         try:
@@ -185,8 +224,6 @@ def _send_via_lte(cfg, measurements):
             print("Kein Datenkontext (Netz/SIM pruefen)")
             return False
         print("LTE-IP:", ip)
-        if unix_now() < TIME_VALID:
-            m.sync_rtc()
         headers = {
             "Content-Type": "application/json",
             "X-Device-ID": cfg["device_id"],
@@ -251,7 +288,16 @@ def run():
         machine.deepsleep(CFG["measure_interval_s"] * 1000)
         return
 
-    # 2. Messen.
+    # 2. Zeit sicherstellen, BEVOR gemessen wird. Ohne gueltige UTC-Zeit keine
+    #    Messung — sonst falsche Timestamps und der Ingest verwirft die Werte.
+    #    Die RTC ueberlebt den Deep-Sleep, daher nur nach Power-Verlust noetig.
+    if unix_now() < TIME_VALID:
+        if not ensure_time(CFG):
+            print("Keine gueltige Zeit -> nicht messen, kurzer Retry")
+            machine.deepsleep(TIME_RETRY_S * 1000)
+            return
+
+    # 3. Messen (jetzt mit gueltiger UTC-Zeit).
     buf = _load_buffer()
     readings = sensors.read_all(CFG)
     if readings:
@@ -260,7 +306,7 @@ def run():
             buf.append([sensor_id, ts, value])
         print("Messung:", readings, "Buffer:", len(buf))
 
-    # 3. Senden wenn Batch voll.
+    # 4. Senden wenn Batch voll.
     if len(buf) >= CFG["batch_size"]:
         if send_batch(CFG, buf):
             buf = []
@@ -268,7 +314,7 @@ def run():
             buf = buf[-60:]  # Ueberlauf begrenzen, naechster Zyklus erneut
     _save_buffer(buf)
 
-    # 4. Deep-Sleep bis zur naechsten Messung.
+    # 5. Deep-Sleep bis zur naechsten Messung.
     interval = CFG["measure_interval_s"]
     print("Deep-Sleep:", interval, "s")
     machine.deepsleep(interval * 1000)
