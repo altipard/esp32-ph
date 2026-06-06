@@ -39,10 +39,9 @@ GROUPS = (
         ("apn_pass", "APN-Passwort", "password"),
     )),
     ("Backend", (
-        ("ingest_url", "Ingest-URL", "text"),
+        ("tenant", "Verein (Kuerzel, z. B. fvw)", "text"),
         ("device_id", "Device-ID", "text"),
         ("api_key", "API-Key", "password"),
-        ("tenant_id", "Tenant-ID (Vereinskuerzel)", "text"),
     )),
     ("Messung", (
         ("measure_interval_s", "Messintervall (Sekunden)", "number"),
@@ -350,14 +349,14 @@ def _ok_page():
 def run(config, modem=None, window_s=60):
     """Startet das Portal.
 
-    Hat das Board noch keine gueltige Konfiguration (kein device_id/ingest_url),
+    Hat das Board noch keine gueltige Konfiguration (kein device_id/tenant),
     bleibt das Portal offen bis gespeichert wird. Sonst schliesst es nach
     window_s, falls niemand verbindet.
 
     Liefert True, wenn eine neue Konfiguration gespeichert wurde (Aufrufer
     sollte dann neu starten).
     """
-    unconfigured = not (config.get("device_id") and config.get("ingest_url"))
+    unconfigured = not (config.get("device_id") and (config.get("tenant") or config.get("ingest_url")))
     ap, ssid = start_ap(config)
     print("Captive-Portal aktiv:", ssid, "->", AP_IP)
     _led(True)
