@@ -428,7 +428,9 @@ def run():
     #    sie haengt sich an den naechsten regulaeren Batch (kein Extra-Funkzyklus).
     now_ts = int(unix_now())
     bat = read_battery_percent() if (now_ts - state["bat_ts"]) >= BATTERY_INTERVAL_S else None
-    if len(buf) >= CFG["batch_size"]:
+    # Senden wenn Batch voll ODER Batterie faellig (dann auch als Heartbeat ohne
+    # Messwerte — das Backend akzeptiert leeres "m" mit "bat").
+    if len(buf) >= CFG["batch_size"] or bat is not None:
         ok = send_batch(CFG, buf, bat)
         state["send_ok"] = ok
         state["send_ts"] = now_ts
