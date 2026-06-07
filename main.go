@@ -163,12 +163,63 @@ func (ui *appUI) buildBoardStep() fyne.CanvasObject {
 			"3. Leuchtet am Board nichts? USB-C-Stecker umdrehen.\n" +
 			"Dann unten auf »Weiter«.")
 	ui.portSelect = widget.NewSelect(nil, func(string) { ui.updateControls() })
+	updateBtn := widget.NewButtonWithIcon("Firmware aktualisieren", theme.ViewRefreshIcon(), ui.doUpdate)
 	diagBtn := widget.NewButtonWithIcon("Diagnose / Vitalwerte", theme.InfoIcon(), ui.doDiagnose)
 	return container.NewVBox(
 		help,
 		widget.NewForm(widget.NewFormItem("Serieller Port", ui.portSelect)),
-		container.NewHBox(diagBtn),
+		container.NewHBox(updateBtn, diagBtn),
 	)
+}
+
+// doUpdate re-uploads only the firmware modules over the raw REPL, WITHOUT
+// erasing flash — so config.json and log.txt survive. It runs only if the board
+// already has a working MicroPython (raw REPL reachable); otherwise it points
+// the user to the full flash.
+func (ui *appUI) doUpdate() {
+	port, ok := ui.selectedPort()
+	if !ok {
+		ui.warn("Bitte zuerst einen Port wählen.")
+		return
+	}
+	firmware, err := assets.FirmwareFiles()
+	if err != nil {
+		ui.warn("Firmware-Dateien nicht lesbar: " + err.Error())
+		return
+	}
+	ui.setRunning(true, "Firmware-Update …")
+	go func() {
+		ui.logf("Update: prüfe auf vorhandenes MicroPython …")
+		p, err := provision.Open(port)
+		if err != nil {
+			ui.logf("Kein MicroPython erreichbar: %v", err)
+			ui.warn("Kein MicroPython auf dem Board erkannt.\n" +
+				"Bitte zuerst »Erst-Flash« nutzen (löscht dabei die Konfiguration).")
+			ui.setRunning(false, "Update abgebrochen ✗")
+			return
+		}
+		defer func() { _ = p.SoftReset(); _ = p.Close() }()
+
+		impl, _ := p.Eval("import sys; print(sys.implementation.name)")
+		if !strings.Contains(impl, "micropython") {
+			ui.logf("Unerwartete Laufzeit: %q", impl)
+			ui.warn("Auf dem Board läuft kein MicroPython — bitte »Erst-Flash«.")
+			ui.setRunning(false, "Update abgebrochen ✗")
+			return
+		}
+		ui.logf("MicroPython erkannt — Konfiguration bleibt erhalten.")
+		for _, file := range firmware {
+			ui.logf("Aktualisiere %s (%d Bytes) …", file.Name, len(file.Data))
+			if err := p.WriteFile(file.Name, file.Data); err != nil {
+				ui.logf("FEHLER: %v", err)
+				ui.setRunning(false, "Update fehlgeschlagen ✗")
+				return
+			}
+		}
+		ui.logf("Neustart auslösen …")
+		ui.logf("FERTIG: Firmware aktualisiert (config.json + log.txt erhalten).")
+		ui.setRunning(false, "Update fertig ✓")
+	}()
 }
 
 // doDiagnose connects to the selected board, reads its vitals + persisted log
