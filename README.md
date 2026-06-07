@@ -60,7 +60,7 @@ Was für ein Gerät gebraucht wird (und im Test verwendet wurde):
 
 | Bauteil | Konkret | Hinweis |
 |--|--|--|
-| **Board** | LILYGO **T-SIM7000G** (Solar-Variante) | ESP32 + LTE-Modem + GNSS auf einer Platine |
+| **Board** | LILYGO **[T-SIM7000G](https://lilygo.cc/products/t-sim7000g)** (Solar-Variante) | ESP32 + LTE-Modem + GNSS auf einer Platine ([Doku](https://github.com/Xinyuan-LilyGO/LilyGo-Modem-Series/blob/main/docs/en/esp32/sim7000-esp32/README.MD) · [Schaltplan](https://github.com/Xinyuan-LilyGO/LilyGo-Modem-Series/blob/main/schematic/esp32/T-SIM7000G-200415.pdf)) |
 | **MCU** | ESP32-WROVER-B (8 MB PSRAM, 16 MB Flash) | auf dem Board |
 | **Modem** | SIM7000G — LTE-M / NB-IoT / 2G + GNSS | auf dem Board |
 | **Temperatur-Sensor** | DS18B20 (wasserdichte Sonde) | OneWire, an **GPIO 32** |
