@@ -10,8 +10,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -161,10 +163,90 @@ func (ui *appUI) buildBoardStep() fyne.CanvasObject {
 			"3. Leuchtet am Board nichts? USB-C-Stecker umdrehen.\n" +
 			"Dann unten auf »Weiter«.")
 	ui.portSelect = widget.NewSelect(nil, func(string) { ui.updateControls() })
+	diagBtn := widget.NewButtonWithIcon("Diagnose / Vitalwerte", theme.InfoIcon(), ui.doDiagnose)
 	return container.NewVBox(
 		help,
 		widget.NewForm(widget.NewFormItem("Serieller Port", ui.portSelect)),
+		container.NewHBox(diagBtn),
 	)
+}
+
+// doDiagnose connects to the selected board, reads its vitals + persisted log
+// over the serial raw REPL, and shows them. The board is reset by Open (RTC RAM
+// counters reset to 0), but log.txt on flash survives; SoftReset resumes normal
+// operation afterwards.
+func (ui *appUI) doDiagnose() {
+	port, ok := ui.selectedPort()
+	if !ok {
+		ui.warn("Bitte zuerst einen Port wählen.")
+		return
+	}
+	ui.setRunning(true, "Diagnose läuft …")
+	go func() {
+		defer ui.setRunning(false, "Bereit.")
+		ui.logf("Diagnose: verbinde mit %s …", port)
+		p, err := provision.Open(port)
+		if err != nil {
+			ui.logf("FEHLER: %v", err)
+			return
+		}
+		defer func() { _ = p.SoftReset(); _ = p.Close() }()
+
+		vitals, verr := p.ReadVitals()
+		if verr != nil {
+			ui.logf("Vitalwerte: %v", verr)
+		}
+		logTxt, lerr := p.ReadLog()
+		if lerr != nil {
+			ui.logf("Log: %v", lerr)
+		}
+		ui.logf("Diagnose fertig.")
+		ui.showReport("Gerätediagnose", formatDiagnose(vitals, logTxt))
+	}()
+}
+
+// formatDiagnose turns the vitals JSON + raw log into a readable report.
+func formatDiagnose(vitalsJSON, logTxt string) string {
+	var b strings.Builder
+	var m map[string]any
+	if vitalsJSON != "" && json.Unmarshal([]byte(vitalsJSON), &m) == nil {
+		b.WriteString("== Vitalwerte ==\n")
+		rows := []struct{ key, label string }{
+			{"fw", "Firmware"},
+			{"time_utc", "Zeit (UTC)"},
+			{"battery", "Batterie %"},
+			{"uptime_s", "Uptime (s)"},
+			{"ram_free", "RAM frei (B)"},
+			{"chip_c", "Chip °C"},
+			{"buffered", "Gepuffert"},
+			{"send", "Letzter Versand"},
+		}
+		for _, r := range rows {
+			if v, ok := m[r.key]; ok && v != nil {
+				b.WriteString(fmt.Sprintf("%-18s %v\n", r.label+":", v))
+			}
+		}
+	} else if vitalsJSON != "" {
+		b.WriteString(vitalsJSON + "\n")
+	}
+	b.WriteString("\n== Log (log.txt) ==\n")
+	if strings.TrimSpace(logTxt) == "" {
+		b.WriteString("(leer)\n")
+	} else {
+		b.WriteString(logTxt)
+	}
+	return b.String()
+}
+
+// showReport displays a scrollable, monospace report dialog.
+func (ui *appUI) showReport(title, text string) {
+	fyne.Do(func() {
+		lbl := widget.NewLabel(text)
+		lbl.TextStyle = fyne.TextStyle{Monospace: true}
+		sc := container.NewVScroll(lbl)
+		sc.SetMinSize(fyne.NewSize(460, 360))
+		dialog.ShowCustom(title, "Schließen", sc, ui.win)
+	})
 }
 
 func (ui *appUI) refreshPorts() {
