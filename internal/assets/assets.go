@@ -36,6 +36,7 @@ type FirmwareFile struct {
 var firmwareOrder = []string{
 	"pure-min.css",
 	"logo.png",
+	"logbuf.py",
 	"board.py",
 	"modem.py",
 	"sensors.py",

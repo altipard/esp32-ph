@@ -26,6 +26,8 @@ import machine
 
 import board
 import sensors
+import logbuf
+from logbuf import log
 
 CONFIG_PATH = "config.json"
 EPOCH_OFFSET = 946684800  # RTC zaehlt ab 2000, Unix ab 1970
@@ -37,6 +39,16 @@ TIME_RETRY_S = 60  # kurzer Deep-Sleep, wenn keine Zeit ermittelbar war
 # Der Tenant wird serverseitig ueber die Subdomain aufgeloest -> kein Header.
 INGEST_HOST_SUFFIX = ".petri-heil.online"
 INGEST_PATH = "/water-monitoring/api/v1/ingest/"
+
+# Batteriestand: hoechstens einmal pro Tag mitsenden (haengt am naechsten Batch).
+BATTERY_INTERVAL_S = 24 * 60 * 60
+# LiPo/18650-Naeherung; Sense-Pin hat einen Spannungsteiler (Faktor 2).
+BATTERY_FULL_V = 4.2
+BATTERY_EMPTY_V = 3.3
+BATTERY_DIVIDER = 2.0
+
+# Firmware-Version (mit Git-Tag/Release synchron halten) — im Status-Portal.
+VERSION = "v0.1.0"
 
 _DEFAULTS = {
     "ap_password": "petriheil",
@@ -64,7 +76,7 @@ def load_config():
         with open(CONFIG_PATH) as fh:
             cfg.update(json.load(fh))
     except (OSError, ValueError) as exc:
-        print("config.json nicht lesbar:", exc)
+        log("config.json nicht lesbar:", exc)
     return cfg
 
 
@@ -72,20 +84,53 @@ CFG = load_config()
 _rtc = machine.RTC()
 
 
-# --- RTC-Puffer (ueberlebt Deep-Sleep) ------------------------------------
-def _load_buffer():
+# --- RTC-State (ueberlebt Deep-Sleep) -------------------------------------
+# Haelt den Messwert-Puffer und den Zeitpunkt des letzten Batterie-Reports.
+def _load_state():
     try:
         raw = _rtc.memory()
-        return json.loads(raw) if raw else []
+        if raw:
+            data = json.loads(raw)
+            if isinstance(data, list):  # alte Form: nur der Puffer
+                data = {"buf": data}
+        else:
+            data = {}
     except (ValueError, OSError):
-        return []
+        data = {}
+    data.setdefault("buf", [])
+    data.setdefault("bat_ts", 0)
+    return data
 
 
-def _save_buffer(buf):
+def _save_state(state):
     try:
-        _rtc.memory(json.dumps(buf))
+        _rtc.memory(json.dumps(state))
     except OSError:
         pass
+
+
+def read_battery_percent():
+    """Liest die Batteriespannung am Sense-Pin und gibt 0-100 % (oder None).
+
+    Lineare Naeherung zwischen BATTERY_EMPTY_V und BATTERY_FULL_V — bewusst grob,
+    der ESP32-ADC ist nicht praezise. Ohne angeschlossene Zelle ~0 %."""
+    try:
+        adc = machine.ADC(machine.Pin(board.BAT_ADC))
+        try:
+            adc.atten(machine.ADC.ATTN_11DB)  # voller Messbereich
+        except AttributeError:
+            pass
+        total = 0
+        n = 5
+        for _ in range(n):
+            total += adc.read_uv()
+            time.sleep_ms(20)
+        v_bat = (total / n) / 1_000_000 * BATTERY_DIVIDER
+        pct = (v_bat - BATTERY_EMPTY_V) / (BATTERY_FULL_V - BATTERY_EMPTY_V) * 100
+        return int(max(0, min(100, round(pct))))
+    except (OSError, ValueError, AttributeError) as exc:
+        log("Batterie-Lesefehler:", exc)
+        return None
 
 
 def unix_now():
@@ -121,7 +166,14 @@ def select_transport(cfg):
 
 
 # --- Senden ----------------------------------------------------------------
-def _post(cfg, measurements):
+def _build_body(measurements, battery):
+    body = {"m": measurements}
+    if battery is not None:
+        body["bat"] = battery
+    return json.dumps(body)
+
+
+def _post(cfg, measurements, battery=None):
     import urequests
 
     headers = {
@@ -131,12 +183,12 @@ def _post(cfg, measurements):
     }
     resp = None
     try:
-        resp = urequests.post(resolve_ingest_url(cfg), data=json.dumps({"m": measurements}), headers=headers)
+        resp = urequests.post(resolve_ingest_url(cfg), data=_build_body(measurements, battery), headers=headers)
         ok = resp.status_code in (200, 201)
-        print("Ingest:", resp.status_code, resp.text)
+        log("Ingest:", resp.status_code, resp.text)
         return ok
     except OSError as exc:
-        print("POST-Fehler:", exc)
+        log("POST-Fehler:", exc)
         return False
     finally:
         if resp is not None:
@@ -209,13 +261,13 @@ def ensure_time(cfg):
     return unix_now() >= TIME_VALID
 
 
-def _send_via_wifi(cfg, measurements):
+def _send_via_wifi(cfg, measurements, battery=None):
     wlan = _wifi_up(cfg)
     if not wlan:
-        print("WLAN nicht verbunden")
+        log("WLAN nicht verbunden")
         return False
     try:
-        return _post(cfg, measurements)
+        return _post(cfg, measurements, battery)
     finally:
         try:
             wlan.disconnect()
@@ -224,85 +276,133 @@ def _send_via_wifi(cfg, measurements):
             pass
 
 
-def _send_via_lte(cfg, measurements):
+def _send_via_lte(cfg, measurements, battery=None):
     """Sendet per Mobilfunk via SIM7000-AT-HTTP (kein PPP)."""
     from modem import Modem
 
     m = Modem()
     if not m.power_on():
-        print("Modem antwortet nicht")
+        log("Modem antwortet nicht")
         return False
     try:
         m.configure_network(cfg.get("network_mode", "auto"))
         if not m.sim_ready():
-            print("SIM nicht bereit")
+            log("SIM nicht bereit")
             return False
         ip = m.data_connect(cfg.get("apn", ""))
         if not ip:
-            print("Kein Datenkontext (Netz/SIM pruefen)")
+            log("Kein Datenkontext (Netz/SIM pruefen)")
             return False
-        print("LTE-IP:", ip)
+        log("LTE-IP:", ip)
         headers = {
             "Content-Type": "application/json",
             "X-Device-ID": cfg["device_id"],
             "X-API-Key": cfg["api_key"],
         }
-        payload = json.dumps({"m": measurements})
+        payload = _build_body(measurements, battery)
         code = m.http_post(resolve_ingest_url(cfg), headers, payload)
-        print("Ingest HTTP:", code)
+        log("Ingest HTTP:", code)
         return code in (200, 201)
     finally:
         m.data_disconnect()
         m.power_off()
 
 
-def send_batch(cfg, buf):
+def send_batch(cfg, buf, battery=None):
     measurements = [[sid, ts, val] for (sid, ts, val) in buf][:60]
     transport = select_transport(cfg)
-    print("Sende per", transport, "-", len(measurements), "Messwerte")
+    log("Sende per", transport, "-", len(measurements), "Messwerte", "| bat:", battery)
     if transport == "wifi":
-        return _send_via_wifi(cfg, measurements)
-    return _send_via_lte(cfg, measurements)
+        return _send_via_wifi(cfg, measurements, battery)
+    return _send_via_lte(cfg, measurements, battery)
+
+
+# --- Vitalwerte fuers Status-Portal ---------------------------------------
+def vitals():
+    """Liefert die Geraete-Vitalwerte fuer die Status-Seite des Portals."""
+    import gc
+
+    state = _load_state()
+    time_utc = None
+    if unix_now() >= TIME_VALID:
+        tm = time.localtime()  # RTC steht auf UTC
+        time_utc = "%04d-%02d-%02d %02d:%02d:%02d UTC" % (tm[0], tm[1], tm[2], tm[3], tm[4], tm[5])
+
+    chip_c = None
+    try:
+        import esp32
+        chip_c = int((esp32.raw_temperature() - 32) / 1.8)  # raw ist Fahrenheit
+    except (ImportError, AttributeError, OSError):
+        chip_c = None
+
+    send = "-"
+    sts = state.get("send_ts")
+    if sts:
+        stm = time.localtime(int(sts) - EPOCH_OFFSET)
+        send = "%s @ %02d:%02d" % ("OK" if state.get("send_ok") else "Fehler", stm[3], stm[4])
+
+    return {
+        "fw": VERSION,
+        "uptime_s": time.ticks_ms() // 1000,
+        "ram_free": gc.mem_free(),
+        "chip_c": chip_c,
+        "battery": read_battery_percent(),
+        "buffered": len(state.get("buf", [])),
+        "time_utc": time_utc,
+        "send": send,
+        "log": logbuf.lines(15),
+    }
 
 
 # --- Captive-Portal bei Kaltstart -----------------------------------------
 def maybe_run_portal(cfg):
-    """Faehrt bei Kaltstart das Konfig-Portal hoch. Liefert True wenn neu
+    """Faehrt bei Kaltstart das Konfig-/Status-Portal hoch. Liefert True wenn neu
     konfiguriert wurde (Aufrufer startet dann neu)."""
     import captive
 
     modem = None
-    if cfg.get("gps_enabled") and select_transport(cfg) == "lte":
-        # Modem fuer Status-/GPS-Anzeige im Portal einschalten (nur Kaltstart).
+    # Modem im Portal anlassen, damit der Status SIM/Signal/Netz zeigen kann.
+    if select_transport(cfg) == "lte":
         try:
             from modem import Modem
             modem = Modem()
             if modem.power_on():
                 modem.configure_network(cfg.get("network_mode", "auto"))
-                modem.gps_power(True)
+                if cfg.get("gps_enabled"):
+                    modem.gps_power(True)
             else:
                 modem = None
         except (OSError, ImportError):
             modem = None
 
-    saved = captive.run(cfg, modem=modem, window_s=60)
+    saved = captive.run(cfg, modem=modem, vitals=vitals, window_s=60)
     if modem is not None:
         modem.power_off()
     return saved
 
 
 # --- Hauptablauf -----------------------------------------------------------
+def _sleep(ms):
+    """Log nach Flash sichern, dann Deep-Sleep (danach laeuft kein Code mehr)."""
+    logbuf.flush()
+    machine.deepsleep(ms)
+
+
 def run():
+    # Persistierte Log-Zeilen in den Ring laden (ueberleben den Deep-Sleep).
+    logbuf.load()
+
     # 1. Kaltstart -> Konfig-Portal (Erstconfig blockierend, sonst 60s-Fenster).
     if is_cold_boot():
         if maybe_run_portal(CFG):
-            print("Neu konfiguriert -> Neustart")
+            log("Neu konfiguriert -> Neustart")
+            logbuf.flush()
             machine.reset()
 
     # Ohne gueltige Config nichts senden (z. B. nach Erst-Flash, Portal abgebrochen).
     if not is_configured(CFG):
-        print("Nicht konfiguriert -> Deep-Sleep")
-        machine.deepsleep(CFG["measure_interval_s"] * 1000)
+        log("Nicht konfiguriert -> Deep-Sleep")
+        _sleep(CFG["measure_interval_s"] * 1000)
         return
 
     # 2. Zeit sicherstellen, BEVOR gemessen wird. Ohne gueltige UTC-Zeit keine
@@ -310,32 +410,50 @@ def run():
     #    Die RTC ueberlebt den Deep-Sleep, daher nur nach Power-Verlust noetig.
     if unix_now() < TIME_VALID:
         if not ensure_time(CFG):
-            print("Keine gueltige Zeit -> nicht messen, kurzer Retry")
-            machine.deepsleep(TIME_RETRY_S * 1000)
+            log("Keine gueltige Zeit -> nicht messen, kurzer Retry")
+            _sleep(TIME_RETRY_S * 1000)
             return
 
     # 3. Messen (jetzt mit gueltiger UTC-Zeit).
-    buf = _load_buffer()
+    state = _load_state()
+    buf = state["buf"]
     readings = sensors.read_all(CFG)
     if readings:
         ts = int(unix_now())
         for sensor_id, value in readings:
             buf.append([sensor_id, ts, value])
-        print("Messung:", readings, "Buffer:", len(buf))
+        log("Messung:", readings, "Buffer:", len(buf))
 
-    # 4. Senden wenn Batch voll.
+    # 4. Senden wenn Batch voll. Batterie hoechstens einmal pro Tag mitsenden —
+    #    sie haengt sich an den naechsten regulaeren Batch (kein Extra-Funkzyklus).
+    now_ts = int(unix_now())
+    bat = read_battery_percent() if (now_ts - state["bat_ts"]) >= BATTERY_INTERVAL_S else None
     if len(buf) >= CFG["batch_size"]:
-        if send_batch(CFG, buf):
+        ok = send_batch(CFG, buf, bat)
+        state["send_ok"] = ok
+        state["send_ts"] = now_ts
+        if ok:
             buf = []
+            if bat is not None:
+                state["bat_ts"] = now_ts
         else:
             buf = buf[-60:]  # Ueberlauf begrenzen, naechster Zyklus erneut
-    _save_buffer(buf)
+    state["buf"] = buf
+    _save_state(state)
 
     # 5. Deep-Sleep bis zur naechsten Messung.
     interval = CFG["measure_interval_s"]
-    print("Deep-Sleep:", interval, "s")
-    machine.deepsleep(interval * 1000)
+    log("Deep-Sleep:", interval, "s")
+    _sleep(interval * 1000)
 
 
 if __name__ == "__main__":
-    run()
+    try:
+        run()
+    except Exception as exc:  # Absturz noch ins Log retten, dann kurz schlafen
+        try:
+            log("CRASH:", exc)
+            logbuf.flush()
+        except Exception:
+            pass
+        machine.deepsleep(TIME_RETRY_S * 1000)

@@ -19,6 +19,7 @@ import time
 from machine import UART, Pin
 
 import board
+from logbuf import log
 
 CSQ_UNKNOWN = 99
 
@@ -367,7 +368,7 @@ class Modem:
                     pass
             self.at("AT+SHCONN", timeout_ms=timeout_s * 1000)
         except OSError as exc:
-            print("SHCONN-Fehler:", exc)
+            log("SHCONN-Fehler:", exc)
             return None
 
         try:
@@ -378,7 +379,7 @@ class Modem:
             resp = self.at('AT+SHREQ="%s",3' % path, timeout_ms=timeout_s * 1000, expect="+SHREQ:")
             return self._parse_shreq(resp)
         except OSError as exc:
-            print("SHREQ-Fehler:", exc)
+            log("SHREQ-Fehler:", exc)
             return None
         finally:
             try:
