@@ -204,7 +204,10 @@ func (p *Provisioner) pasteAndCapture(cmd string) ([]byte, error) {
 	if _, err := p.port.Write([]byte{ctrlD}); err != nil {
 		return nil, err
 	}
-	resp, err := p.readUntilCapture([]byte(">"), 15*time.Second)
+	// Terminate on EOT+prompt (0x04 ">"), the canonical raw-REPL end. A plain
+	// ">" would false-match inside a traceback ("<stdin>") and desync the next
+	// command.
+	resp, err := p.readUntilCapture([]byte{ctrlD, '>'}, 15*time.Second)
 	if err != nil {
 		return resp, fmt.Errorf("keine Board-Antwort: %w", err)
 	}
