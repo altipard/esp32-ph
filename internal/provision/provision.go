@@ -147,25 +147,26 @@ func (p *Provisioner) drain() {
 	_ = p.port.SetReadTimeout(2 * time.Second)
 }
 
-// execPaste runs cmd via MicroPython's raw-paste mode: a flow-controlled stdin
-// transfer (the same mechanism mpremote uses). The device grants a send window
-// and acks with 0x01 as it consumes data, so large payloads cannot overflow the
-// UART buffer. Must be called while already in raw REPL.
-func (p *Provisioner) execPaste(cmd string) error {
+// pasteAndCapture runs cmd via MicroPython's raw-paste mode: a flow-controlled
+// stdin transfer (the same mechanism mpremote uses). The device grants a send
+// window and acks with 0x01 as it consumes data, so large payloads cannot
+// overflow the UART buffer. Returns the raw board response (stdout, 0x04,
+// stderr, 0x04, ">"). Must be called while already in raw REPL.
+func (p *Provisioner) pasteAndCapture(cmd string) ([]byte, error) {
 	// Initiate raw-paste: Ctrl-E 'A' Ctrl-A.
 	if _, err := p.port.Write([]byte{0x05, 'A', ctrlA}); err != nil {
-		return err
+		return nil, err
 	}
 	hdr, err := p.readN(2, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("raw-paste Init: %w", err)
+		return nil, fmt.Errorf("raw-paste Init: %w", err)
 	}
 	if !(hdr[0] == 'R' && hdr[1] == 0x01) {
-		return fmt.Errorf("raw-paste nicht unterstuetzt (Antwort %q)", hdr)
+		return nil, fmt.Errorf("raw-paste nicht unterstuetzt (Antwort %q)", hdr)
 	}
 	win, err := p.readN(2, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("raw-paste Fenstergroesse: %w", err)
+		return nil, fmt.Errorf("raw-paste Fenstergroesse: %w", err)
 	}
 	window := int(win[0]) | int(win[1])<<8
 	if window <= 0 {
@@ -178,13 +179,13 @@ func (p *Provisioner) execPaste(cmd string) error {
 		for remain == 0 {
 			b, err := p.readByte(8 * time.Second)
 			if err != nil {
-				return fmt.Errorf("raw-paste Flusskontrolle: %w", err)
+				return nil, fmt.Errorf("raw-paste Flusskontrolle: %w", err)
 			}
 			if b == 0x01 {
 				remain += window
 			} else if b == ctrlD {
 				_, _ = p.port.Write([]byte{ctrlD})
-				return fmt.Errorf("raw-paste vom Board abgebrochen")
+				return nil, fmt.Errorf("raw-paste vom Board abgebrochen")
 			}
 		}
 		n := remain
@@ -192,27 +193,69 @@ func (p *Provisioner) execPaste(cmd string) error {
 			n = rem
 		}
 		if _, err := p.port.Write(data[i : i+n]); err != nil {
-			return err
+			return nil, err
 		}
 		i += n
 		remain -= n
 	}
 
 	// End of data. The device acks, executes, and returns to the raw-REPL ">"
-	// prompt, with stdout/stderr (separated by 0x04 markers) in between. Rather
-	// than count exact markers, read up to the prompt and check for a traceback.
+	// prompt, with stdout/stderr (separated by 0x04 markers) in between.
 	if _, err := p.port.Write([]byte{ctrlD}); err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := p.readUntilCapture([]byte(">"), 15*time.Second)
 	if err != nil {
-		return fmt.Errorf("keine Board-Antwort nach Upload: %w", err)
+		return resp, fmt.Errorf("keine Board-Antwort: %w", err)
+	}
+	return resp, nil
+}
+
+// execPaste runs cmd and only checks for a Python traceback (no output needed).
+func (p *Provisioner) execPaste(cmd string) error {
+	resp, err := p.pasteAndCapture(cmd)
+	if err != nil {
+		return err
 	}
 	if idx := bytes.Index(resp, []byte("Traceback")); idx >= 0 {
 		msg := strings.TrimRight(strings.TrimSpace(string(resp[idx:])), ">")
 		return fmt.Errorf("board-fehler: %s", strings.TrimSpace(msg))
 	}
 	return nil
+}
+
+// Eval runs cmd and returns its stdout. A Python exception becomes an error.
+// Must be called while in raw REPL.
+func (p *Provisioner) Eval(cmd string) (string, error) {
+	resp, err := p.pasteAndCapture(cmd)
+	if err != nil {
+		return "", err
+	}
+	// Raw-paste ends with: [0x04 end-ack] <stdout> 0x04 <stderr> ">".
+	// Drop the trailing prompt, split on 0x04, and skip an empty leading
+	// segment (the end-ack) so stdout/stderr land correctly.
+	resp = bytes.TrimRight(resp, "\r\n >")
+	segs := bytes.Split(resp, []byte{ctrlD})
+	if len(segs) > 1 && strings.Trim(string(segs[0]), "\x00\x01\r\n ") == "" {
+		segs = segs[1:]
+	}
+	stdout := strings.Trim(string(segs[0]), "\x00\x01\r\n")
+	if len(segs) > 1 {
+		if stderr := strings.TrimSpace(string(segs[1])); stderr != "" {
+			return stdout, fmt.Errorf("board-fehler: %s", stderr)
+		}
+	}
+	return stdout, nil
+}
+
+// ReadVitals returns the device vitals as a JSON string (from main.vitals()).
+func (p *Provisioner) ReadVitals() (string, error) {
+	return p.Eval("import json, main; print(json.dumps(main.vitals()))")
+}
+
+// ReadLog returns the persisted log buffer (log.txt), or "" if none exists.
+func (p *Provisioner) ReadLog() (string, error) {
+	return p.Eval("try:\n  _d = open('log.txt').read()\nexcept OSError:\n  _d = ''\nprint(_d)")
 }
 
 // readN reads exactly n bytes (or errors on timeout).
