@@ -13,6 +13,8 @@ import time
 
 import machine
 
+from logbuf import log
+
 
 def read_ds18b20_x10(cfg):
     """Liest einen DS18B20 am konfigurierten Pin. cfg: {"pin": int}."""
@@ -51,15 +53,15 @@ def read_all(config):
         stype = entry.get("type")
         reader = READERS.get(stype)
         if not sensor_id or reader is None:
-            print("Sensor uebersprungen (id/typ):", sensor_id, stype)
+            log("Sensor uebersprungen (id/typ):", sensor_id, stype)
             continue
         try:
             value = reader(entry)
         except (OSError, ValueError) as exc:
-            print("Sensor-Fehler", sensor_id, ":", exc)
+            log("Sensor-Fehler", sensor_id, ":", exc)
             value = None
         if value is None:
-            print("Sensor", sensor_id, "liefert keinen Wert")
+            log("Sensor", sensor_id, "liefert keinen Wert")
             continue
         results.append((sensor_id, value))
     return results

@@ -21,6 +21,7 @@ import network
 import socket
 
 import board
+from logbuf import log
 
 AP_IP = "192.168.4.1"
 CONFIG_PATH = "config.json"
@@ -135,11 +136,16 @@ def _handle_dns(sock):
 
 
 # --- HTTP ------------------------------------------------------------------
-def _page(inner):
-    """Rahmt Inhalt in eine mobile Seite (Pure.css + Petri-Heil-Branding)."""
+def _page(inner, refresh_s=None):
+    """Rahmt Inhalt in eine mobile Seite (Pure.css + Petri-Heil-Branding).
+
+    refresh_s setzt ein Auto-Refresh — auf der Status-Seite dient das zugleich
+    als Herzschlag, der das Portal offen haelt, solange der Tab offen ist."""
+    refresh = ("<meta http-equiv='refresh' content='%d'>" % refresh_s) if refresh_s else ""
     return (
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        + refresh +
         "<title>Petri-Heil Sensor</title>"
         "<link rel='stylesheet' href='/pure.css'>"
         "<style>" + BRAND_CSS + "</style></head><body><div class='wrap'>"
@@ -180,28 +186,69 @@ def _html(config, msg=""):
         + "<button type='submit' class='pure-button pure-button-primary full'>"
           "Speichern &amp; Neustart</button></form>"
         "<p class='card' style='text-align:center'>"
-        "<a href='/status'>&#8505; Status (SIM / Signal / GPS)</a></p>"
+        "<a href='/status'>&#8505; Ger&auml;tezustand (Vitalwerte / Log)</a></p>"
     )
     return _page(banner + form)
 
 
-def _status_html(config, modem):
-    rows = []
+def _esc(s):
+    return str(s).replace("&", "&amp;").replace("<", "&lt;")
+
+
+def _status_html(config, modem, vitals=None):
+    """Rendert den Gerätezustand: Geräte-Vitals, Energie, Mobilfunk, Daten, Log.
+    vitals ist eine Funktion (oder dict) vom Aufrufer; modem optional."""
+    try:
+        v = vitals() if callable(vitals) else (vitals or {})
+    except Exception:
+        v = {}
+    rows = ["<h3>Ger&auml;t</h3>"]
+    rows.append("<p><b>Firmware:</b> %s</p>" % _esc(v.get("fw", "?")))
+    up = v.get("uptime_s")
+    if up is not None:
+        rows.append("<p><b>Uptime:</b> %dh %02dm</p>" % (up // 3600, (up % 3600) // 60))
+    if v.get("ram_free") is not None:
+        rows.append("<p><b>Speicher frei:</b> %d KB</p>" % (v["ram_free"] // 1024))
+    if v.get("chip_c") is not None:
+        rows.append("<p><b>Chip-Temp:</b> %d &deg;C</p>" % v["chip_c"])
+    if v.get("time_utc"):
+        rows.append("<p><b>Zeit:</b> %s</p>" % _esc(v["time_utc"]))
+
+    rows.append("<h3>Energie</h3>")
+    bat = v.get("battery")
+    rows.append("<p><b>Batterie:</b> %s</p>" % (("%d %%" % bat) if bat is not None else "kein Akku / unbekannt"))
+
+    rows.append("<h3>Mobilfunk</h3>")
     if modem is None:
-        rows.append("<p>Kein Modem-Status (WLAN-Modus oder Modem aus).</p>")
+        rows.append("<p>kein Modem (WLAN-Modus / Modem aus)</p>")
     else:
         st = modem.status()
         rows.append("<p><b>SIM:</b> %s</p>" % ("OK" if st["sim"] else "kein/Fehler"))
         sig = st["signal_dbm"]
         rows.append("<p><b>Signal:</b> %s</p>" % (("%d dBm" % sig) if sig is not None else "unbekannt"))
-        rows.append("<p><b>Netz:</b> %s</p>" % (st["operator"] or "n/a"))
+        rows.append("<p><b>Netz:</b> %s</p>" % _esc(st["operator"] or "n/a"))
         rows.append("<p><b>Registriert:</b> %s</p>" % ("ja" if st["registered"] else "nein"))
-        gps = modem.gps_location()
-        if gps.get("fix"):
-            rows.append("<p><b>GPS:</b> Fix %.5f, %.5f (Sats %s)</p>" % (gps["lat"], gps["lon"], gps.get("sats")))
-        else:
-            rows.append("<p><b>GPS:</b> kein Fix</p>")
-    return _page("<div class='card'>" + "".join(rows) + "<p><a href='/'>&#8592; zur&uuml;ck</a></p></div>")
+        if config.get("gps_enabled"):
+            gps = modem.gps_location()
+            if gps.get("fix"):
+                rows.append("<p><b>GPS:</b> %.5f, %.5f (Sats %s)</p>" % (gps["lat"], gps["lon"], gps.get("sats")))
+            else:
+                rows.append("<p><b>GPS:</b> kein Fix</p>")
+
+    rows.append("<h3>Daten</h3>")
+    rows.append("<p><b>Gepuffert:</b> %s Messwerte</p>" % _esc(v.get("buffered", "?")))
+    rows.append("<p><b>Letzter Versand:</b> %s</p>" % _esc(v.get("send", "-")))
+
+    body = "<div class='card'>" + "".join(rows) + "</div>"
+    loglines = v.get("log") or []
+    if loglines:
+        body += (
+            "<div class='card'><h3>Letzte Meldungen</h3>"
+            "<pre style='white-space:pre-wrap;font-size:.8em;margin:0'>%s</pre></div>"
+            % _esc("\n".join(loglines))
+        )
+    body += "<p style='text-align:center'><a href='/'>&#8592; zur&uuml;ck</a></p>"
+    return _page(body, refresh_s=5)
 
 
 def _urldecode(s):
@@ -299,7 +346,7 @@ def _send_page(cl, page):
     _send_all(cl, page.encode("utf-8"))
 
 
-def _serve_once(http, config, modem):
+def _serve_once(http, config, modem, vitals=None):
     """Bedient eine HTTP-Verbindung. Liefert (saved, had_client)."""
     try:
         cl, _ = http.accept()
@@ -328,7 +375,7 @@ def _serve_once(http, config, modem):
             _send_page(cl, _ok_page())
             saved = True
         elif path.startswith("/status"):
-            _send_page(cl, _status_html(config, modem))
+            _send_page(cl, _status_html(config, modem, vitals))
         else:
             _send_page(cl, _html(config))
     except OSError:
@@ -346,40 +393,42 @@ def _ok_page():
     )
 
 
-def run(config, modem=None, window_s=60):
+def run(config, modem=None, vitals=None, window_s=60):
     """Startet das Portal.
 
     Hat das Board noch keine gueltige Konfiguration (kein device_id/tenant),
-    bleibt das Portal offen bis gespeichert wird. Sonst schliesst es nach
-    window_s, falls niemand verbindet.
+    bleibt das Portal offen bis gespeichert wird.
+
+    Sonst gilt ein Idle-Timeout: jeder Client-Zugriff verlaengert das Fenster um
+    window_s. Niemand verbindet -> nach window_s aus. Solange jemand die
+    Status-Seite offen hat (Auto-Refresh alle 5s = Herzschlag), bleibt es offen;
+    Tab zu -> nach window_s in Deep-Sleep (Akku schonen).
 
     Liefert True, wenn eine neue Konfiguration gespeichert wurde (Aufrufer
     sollte dann neu starten).
     """
     unconfigured = not (config.get("device_id") and (config.get("tenant") or config.get("ingest_url")))
     ap, ssid = start_ap(config)
-    print("Captive-Portal aktiv:", ssid, "->", AP_IP)
+    log("Captive-Portal aktiv:", ssid, "->", AP_IP)
     _led(True)
 
     dns = _dns_socket()
     http = _http_socket()
     deadline = time.ticks_add(time.ticks_ms(), window_s * 1000)
-    had_client = False
     saved = False
     try:
         while True:
             _handle_dns(dns)
-            s, client = _serve_once(http, config, modem)
+            s, client = _serve_once(http, config, modem, vitals)
             if client:
-                had_client = True
+                # Aktivitaet -> Fenster verlaengern (Idle-Timeout).
+                deadline = time.ticks_add(time.ticks_ms(), window_s * 1000)
             if s:
                 saved = True
                 break
-            # Timeout nur, wenn konfiguriert UND noch niemand da war.
-            if not unconfigured and not had_client:
-                if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
-                    print("Captive-Portal: niemand verbunden -> aus")
-                    break
+            if not unconfigured and time.ticks_diff(deadline, time.ticks_ms()) <= 0:
+                log("Captive-Portal: Leerlauf -> aus")
+                break
     finally:
         try:
             dns.close()
