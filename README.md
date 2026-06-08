@@ -1,8 +1,8 @@
 # Petri-Heil Wassersensor — Firmware & Flasher
 
-[![CI](https://github.com/altipard/-esp32-ph/actions/workflows/ci.yml/badge.svg)](https://github.com/altipard/-esp32-ph/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/altipard/-esp32-ph?sort=semver)](https://github.com/altipard/-esp32-ph/releases)
-[![License: MIT](https://img.shields.io/github/license/altipard/-esp32-ph)](LICENSE)
+[![CI](https://github.com/altipard/esp32-ph/actions/workflows/ci.yml/badge.svg)](https://github.com/altipard/esp32-ph/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/altipard/esp32-ph?sort=semver)](https://github.com/altipard/esp32-ph/releases)
+[![License: MIT](https://img.shields.io/github/license/altipard/esp32-ph)](LICENSE)
 
 Ein autonomer **Wassersensor für Vereinsgewässer**. Das Gerät misst
 Wasserwerte (aktuell die Temperatur, erweiterbar um pH, Sauerstoff …), schickt
