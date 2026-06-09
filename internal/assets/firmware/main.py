@@ -46,6 +46,13 @@ BATTERY_INTERVAL_S = 24 * 60 * 60
 BATTERY_FULL_V = 4.2
 BATTERY_EMPTY_V = 3.3
 BATTERY_DIVIDER = 2.0
+# Plausibilitaetsfenster fuer eine echte Zelle. BAT_ADC (GPIO35) ist input-only
+# und hat keinen internen Pulldown — ohne angeschlossenen Akku (z. B. reiner
+# USB-Betrieb) floatet der Pin und liefert Zufallswerte. Liegt die gemessene
+# Zellspannung ausserhalb dieses Fensters, gibt es keinen verwertbaren Akku ->
+# None ("unbekannt") statt eines irrefuehrenden 0-/Phantom-Prozentwerts.
+BATTERY_PLAUSIBLE_MIN_V = 3.0
+BATTERY_PLAUSIBLE_MAX_V = 4.35
 
 # Firmware-Version (mit Git-Tag/Release synchron halten) — im Status-Portal.
 VERSION = "v0.1.0"
@@ -126,6 +133,10 @@ def read_battery_percent():
             total += adc.read_uv()
             time.sleep_ms(20)
         v_bat = (total / n) / 1_000_000 * BATTERY_DIVIDER
+        # Kein plausibler Akku (USB-Betrieb / floatender Pin) -> unbekannt.
+        if not (BATTERY_PLAUSIBLE_MIN_V <= v_bat <= BATTERY_PLAUSIBLE_MAX_V):
+            log("Batterie: implausibel (%.2f V) -> kein Akku/USB" % v_bat)
+            return None
         pct = (v_bat - BATTERY_EMPTY_V) / (BATTERY_FULL_V - BATTERY_EMPTY_V) * 100
         return int(max(0, min(100, round(pct))))
     except (OSError, ValueError, AttributeError) as exc:
