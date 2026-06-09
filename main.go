@@ -84,7 +84,7 @@ type appUI struct {
 	progress  *widget.ProgressBarInfinite
 
 	logText   string
-	logLabel  *widget.Label
+	logEntry  *widget.Entry
 	logScroll *container.Scroll
 }
 
@@ -98,9 +98,12 @@ func newUI(w fyne.Window) *appUI {
 	ui.steps[2] = ui.buildDoneStep()
 	ui.content = container.NewStack(ui.steps[0])
 
-	ui.logLabel = widget.NewLabel("")
-	ui.logLabel.Wrapping = fyne.TextWrapWord
-	ui.logScroll = container.NewVScroll(ui.logLabel)
+	// MultiLineEntry statt Label: so kann der Nutzer den Text markieren und mit
+	// Strg+C kopieren (Labels sind in fyne nicht selektierbar). Read-only.
+	ui.logEntry = widget.NewMultiLineEntry()
+	ui.logEntry.Wrapping = fyne.TextWrapWord
+	ui.logEntry.TextStyle = fyne.TextStyle{Monospace: true}
+	ui.logScroll = container.NewVScroll(ui.logEntry)
 	ui.logScroll.SetMinSize(fyne.NewSize(0, 180))
 	logToolbar := container.NewHBox(
 		widget.NewButtonWithIcon("Kopieren", theme.ContentCopyIcon(), ui.copyLog),
@@ -289,14 +292,23 @@ func formatDiagnose(vitalsJSON, logTxt string) string {
 	return b.String()
 }
 
-// showReport displays a scrollable, monospace report dialog.
+// showReport displays a scrollable, monospace report dialog. The text sits in a
+// MultiLineEntry so it can be selected and copied (Strg+C); a Kopieren button
+// puts the whole report on the clipboard.
 func (ui *appUI) showReport(title, text string) {
 	fyne.Do(func() {
-		lbl := widget.NewLabel(text)
-		lbl.TextStyle = fyne.TextStyle{Monospace: true}
-		sc := container.NewVScroll(lbl)
+		entry := widget.NewMultiLineEntry()
+		entry.Wrapping = fyne.TextWrapWord
+		entry.TextStyle = fyne.TextStyle{Monospace: true}
+		entry.SetText(text)
+		sc := container.NewVScroll(entry)
 		sc.SetMinSize(fyne.NewSize(460, 360))
-		dialog.ShowCustom(title, "Schließen", sc, ui.win)
+		copyBtn := widget.NewButtonWithIcon("Kopieren", theme.ContentCopyIcon(), func() {
+			ui.win.Clipboard().SetContent(text)
+			ui.statusLbl.SetText(title + " in Zwischenablage kopiert")
+		})
+		body := container.NewBorder(nil, container.NewHBox(copyBtn), nil, nil, sc)
+		dialog.ShowCustom(title, "Schließen", body, ui.win)
 	})
 }
 
@@ -537,7 +549,7 @@ func (ui *appUI) logf(format string, args ...any) {
 func (ui *appUI) logLine(line string) {
 	fyne.Do(func() {
 		ui.logText += line + "\n"
-		ui.logLabel.SetText(ui.logText)
+		ui.logEntry.SetText(ui.logText)
 		ui.logScroll.ScrollToBottom()
 	})
 }
