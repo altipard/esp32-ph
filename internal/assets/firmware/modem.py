@@ -53,18 +53,96 @@ class Modem:
 
     # --- Stromversorgung ---------------------------------------------------
     def power_on(self):
-        self._pwrkey.value(1)
-        time.sleep_ms(100)
-        self._pwrkey.value(0)
-        time.sleep_ms(1200)
-        self._pwrkey.value(1)
+        # PWRKEY ist ein TOGGLE: laeuft das Modem noch (Crash, fehlgeschlagenes
+        # CPOWD), wuerde ein Puls es AUSschalten. Daher erst per AT pruefen.
+        if self._probe():
+            return True
+        self._pwrkey_pulse()
+        if self._wait_at(timeout_s=15):
+            return True
+        # Moeglicher Probe-Fehlalarm: der Puls hat ein laufendes Modem AUS-
+        # geschaltet. Eine Recovery-Runde schaltet es dann wieder ein.
+        self._pwrkey_pulse()
         return self._wait_at(timeout_s=15)
 
     def power_off(self):
+        """Schaltet das Modem VERIFIZIERT aus. Wirft nie.
+
+        Das Modem haengt direkt an VBAT — der ESP32-Deep-Sleep schaltet es
+        NICHT ab. Bleibt es an, zieht es 5-25 mA durch den ganzen Schlaf und
+        der Akku ist in Tagen leer.
+
+        Tuecken: CPOWD antwortet mit "NORMAL POWER DOWN" (nicht "OK") und
+        braucht danach ~1.8 s bis wirklich aus. PWRKEY ist ein Toggle — ein
+        Puls auf ein bereits ausgeschaltetes Modem wuerde es EINschalten, und
+        nach dem Einschalten antwortet es erst nach ~4.5 s auf AT. Jede
+        Nachkontrolle wartet deshalb laenger als diese Fenster."""
+        acked = False
         try:
-            self.at("AT+CPOWD=1", timeout_ms=2000)
+            self.at("AT+CPOWD=1", timeout_ms=3000, expect="NORMAL POWER DOWN")
+            acked = True
         except OSError:
             pass
+
+        if acked:
+            time.sleep_ms(2000)  # Gnadenfrist: die Antwort kommt VOR dem Aus
+            alive = self._probe(attempts=1)
+            if not alive:
+                log("Modem aus")
+                return
+        else:
+            alive = self._probe()
+
+        if alive:
+            # Modem nachweislich an -> hart per PWRKEY aus, mit Nachkontrolle
+            # und einem zweiten Versuch.
+            if self._pulse_off_check() or self._pulse_off_check():
+                log("Modem aus (PWRKEY)")
+            else:
+                log("WARNUNG: Modem evtl. noch an")
+            return
+
+        # Mehrdeutig: CPOWD ohne Antwort UND stumme Probe — Modem ist aus ODER
+        # an mit kaputtem UART. Ein Puls stellt den Aus-Zustand sicher; hat er
+        # ein ausgeschaltetes Modem geweckt, antwortet es nach dem Boot und
+        # wird wieder ausgeschaltet.
+        self._pwrkey_pulse()
+        time.sleep_ms(6000)  # laenger als Boot-bis-AT (~4.5 s)
+        if not self._probe():
+            log("Modem aus (unbestaetigt)")
+        elif self._pulse_off_check():
+            log("Modem aus (PWRKEY)")
+        else:
+            log("WARNUNG: Modem evtl. noch an")
+
+    def _pulse_off_check(self):
+        """PWRKEY-Aus-Puls mit Nachkontrolle: True wenn das Modem danach stumm ist.
+
+        Settle laenger als Boot-bis-AT (~4.5 s): hat der Puls wegen einer
+        Race-Condition ein schon ausgeschaltetes Modem GEWECKT, antwortet es
+        hier wieder und der Aufrufer kann korrigierend nachpulsen."""
+        self._pwrkey_pulse()
+        time.sleep_ms(5000)  # > Boot-bis-AT, deckt auch Shutdown (~1.8 s) ab
+        return not self._probe()
+
+    def _pwrkey_pulse(self):
+        """Toggle-Puls auf PWRKEY (>=1.2 s LOW schaltet das SIM7000 an bzw. aus;
+        1.5 s fuer Timing-Reserve)."""
+        self._pwrkey.value(1)
+        time.sleep_ms(100)
+        self._pwrkey.value(0)
+        time.sleep_ms(1500)
+        self._pwrkey.value(1)
+
+    def _probe(self, attempts=2):
+        """True, wenn das Modem auf AT antwortet (kurzer Lebenszeichen-Check)."""
+        for _ in range(attempts):
+            try:
+                self.at("AT", timeout_ms=1000)
+                return True
+            except OSError:
+                pass
+        return False
 
     def configure_network(self, mode="auto"):
         """Setzt Funk-Modus (auto/ltem/nbiot/gsm) und aktiviert automatische
