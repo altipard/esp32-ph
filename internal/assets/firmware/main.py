@@ -106,6 +106,7 @@ def _load_state():
         data = {}
     data.setdefault("buf", [])
     data.setdefault("bat_ts", 0)
+    data.setdefault("time_fail", 0)  # Fehlversuche der Zeitsynchronisation
     return data
 
 
@@ -216,6 +217,10 @@ def _wifi_up(cfg, timeout_s=20):
         deadline = time.ticks_add(time.ticks_ms(), timeout_s * 1000)
         while not wlan.isconnected():
             if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
+                try:
+                    wlan.active(False)  # Funk aus, sonst zieht STA weiter Strom
+                except OSError:
+                    pass
                 return None
             time.sleep_ms(200)
     return wlan
@@ -419,14 +424,31 @@ def run():
     # 2. Zeit sicherstellen, BEVOR gemessen wird. Ohne gueltige UTC-Zeit keine
     #    Messung — sonst falsche Timestamps und der Ingest verwirft die Werte.
     #    Die RTC ueberlebt den Deep-Sleep, daher nur nach Power-Verlust noetig.
+    state = _load_state()
     if unix_now() < TIME_VALID:
-        if not ensure_time(CFG):
-            log("Keine gueltige Zeit -> nicht messen, kurzer Retry")
-            _sleep(TIME_RETRY_S * 1000)
+        try:
+            have_time = ensure_time(CFG)
+        except Exception as exc:  # Sync-Crash darf das Backoff nicht umgehen
+            log("Zeitsync-Fehler:", exc)
+            have_time = False
+        if not have_time:
+            # Exponentielles Backoff: 60s, 120s, 240s, ... gedeckelt aufs
+            # Messintervall. Jeder Versuch ist ein voller Modem-Boot — ohne
+            # Backoff frisst die Retry-Schleife bei Funkloch den Akku.
+            fails = state["time_fail"]
+            state["time_fail"] = min(fails + 1, 16)
+            _save_state(state)
+            retry_s = min(TIME_RETRY_S * (2 ** fails), CFG["measure_interval_s"])
+            retry_s = max(retry_s, TIME_RETRY_S)  # measure_interval_s<=0 -> nie deepsleep(0)
+            log("Keine gueltige Zeit -> nicht messen, Retry in", retry_s, "s")
+            _sleep(retry_s * 1000)
             return
+    if state["time_fail"]:
+        # Zeit wieder gueltig -> Backoff sofort zuruecksetzen (RTC-RAM, billig).
+        state["time_fail"] = 0
+        _save_state(state)
 
     # 3. Messen (jetzt mit gueltiger UTC-Zeit).
-    state = _load_state()
     buf = state["buf"]
     readings = sensors.read_all(CFG)
     if readings:
