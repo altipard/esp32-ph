@@ -49,7 +49,16 @@ class Modem:
             rx=board.MODEM_RX,
             timeout=1000,
         )
-        self._pwrkey = Pin(board.MODEM_PWRKEY, Pin.OUT)
+        # _sleep() haelt PWRKEY ueber den Deep-Sleep per hold=True fest (Pin
+        # wuerde sonst floaten und das Modem togglen koennen). Der Hold latcht
+        # den Pegel — er MUSS hier geloest werden, sonst sind alle folgenden
+        # PWRKEY-Pulse wirkungslos. Erst value=1 (inaktiv) setzen, damit das
+        # Loesen keinen Glitch erzeugt.
+        self._pwrkey = Pin(board.MODEM_PWRKEY, Pin.OUT, value=1)
+        try:
+            self._pwrkey.init(hold=False)
+        except (TypeError, ValueError):
+            pass  # Build ohne hold-Support: es gab dann auch keinen Hold
 
     # --- Stromversorgung ---------------------------------------------------
     def power_on(self):
