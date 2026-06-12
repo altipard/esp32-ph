@@ -410,10 +410,26 @@ def _sleep(ms):
         machine.Pin(board.MODEM_PWRKEY, machine.Pin.OUT, value=1, hold=True)
     except (TypeError, ValueError):
         pass  # MicroPython-Build ohne hold-Support -> Verhalten wie bisher
+    # Blaue Board-LED (GPIO12, ACTIVE-LOW mit Strapping-Pulldown) im Schlaf
+    # AUS halten — unkonfiguriert leuchtet sie permanent (~1-2 mA Dauerlast).
+    try:
+        machine.Pin(board.LED, machine.Pin.OUT, value=board.LED_OFF, hold=True)
+    except (TypeError, ValueError):
+        try:
+            machine.Pin(board.LED, machine.Pin.OUT, value=board.LED_OFF)
+        except (ValueError, OSError):
+            pass
     machine.deepsleep(ms)
 
 
 def run():
+    # Board-LED sofort aus (active-low, leuchtet sonst ab Reset durchgehend).
+    # Das Portal schaltet sie bei Bedarf gezielt als Statusanzeige ein.
+    try:
+        machine.Pin(board.LED, machine.Pin.OUT, value=board.LED_OFF)
+    except (ValueError, OSError):
+        pass
+
     # Persistierte Log-Zeilen in den Ring laden (ueberleben den Deep-Sleep).
     logbuf.load()
 
