@@ -73,8 +73,15 @@ BRAND_CSS = (
 
 
 def _led(on):
+    # LED ist ACTIVE-LOW (siehe board.py). Vorher einen evtl. aktiven
+    # Deep-Sleep-Hold loesen, sonst ist der Schreibzugriff wirkungslos.
     try:
-        machine.Pin(board.LED, machine.Pin.OUT).value(1 if on else 0)
+        pin = machine.Pin(board.LED, machine.Pin.OUT)
+        try:
+            pin.init(hold=False)
+        except (TypeError, ValueError):
+            pass
+        pin.value(board.LED_ON if on else board.LED_OFF)
     except (ValueError, OSError):
         pass
 
