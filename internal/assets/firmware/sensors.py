@@ -16,6 +16,13 @@ import machine
 from logbuf import log
 
 
+# DS18B20-Konfigregister: TH=0, TL=0, 10-bit-Aufloesung (0.25 C, 188 ms
+# Wandlung statt 750 ms bei 12 bit). Fuer Gewaessertemperatur reicht das
+# locker und der ESP32 ist pro Messung ~560 ms kuerzer wach.
+_DS_SCRATCH_10BIT = b"\x00\x00\x3f"
+_DS_CONVERT_MS = 200  # 10-bit braucht max. 187.5 ms, mit Reserve
+
+
 def read_ds18b20_x10(cfg):
     """Liest einen DS18B20 am konfigurierten Pin. cfg: {"pin": int}."""
     import onewire
@@ -27,9 +34,20 @@ def read_ds18b20_x10(cfg):
     roms = sensor.scan()
     if not roms:
         return None
+    rom = roms[0]
+    # Aufloesung bei jeder Messung setzen: das Scratchpad ist fluechtig und
+    # der Sensor kann zwischen den Zyklen stromlos gewesen sein.
+    convert_ms = _DS_CONVERT_MS
+    try:
+        sensor.write_scratch(rom, _DS_SCRATCH_10BIT)
+    except (OSError, AttributeError):
+        # Treiber ohne write_scratch -> Sensor bleibt auf 12-bit-Default.
+        # Dann volle Wandlungszeit abwarten, sonst kaeme der 85-C-Power-On-
+        # Wert bzw. eine alte Messung zurueck.
+        convert_ms = 750
     sensor.convert_temp()
-    time.sleep_ms(750)  # 12-bit Wandlungszeit
-    celsius = sensor.read_temp(roms[0])
+    time.sleep_ms(convert_ms)
+    celsius = sensor.read_temp(rom)
     if celsius is None:
         return None
     return int(round(celsius * 10))

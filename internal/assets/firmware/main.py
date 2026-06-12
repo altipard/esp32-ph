@@ -24,6 +24,7 @@ import time
 
 import machine
 
+import batt
 import board
 import sensors
 import logbuf
@@ -42,20 +43,12 @@ INGEST_PATH = "/water-monitoring/api/v1/ingest/"
 
 # Batteriestand: hoechstens einmal pro Tag mitsenden (haengt am naechsten Batch).
 BATTERY_INTERVAL_S = 24 * 60 * 60
-# LiPo/18650-Naeherung; Sense-Pin hat einen Spannungsteiler (Faktor 2).
-BATTERY_FULL_V = 4.2
-BATTERY_EMPTY_V = 3.3
+# Sense-Pin hat einen Spannungsteiler (Faktor 2). Spannung -> Prozent macht
+# batt.py (OCV-Kurve statt linearer Naeherung).
 BATTERY_DIVIDER = 2.0
-# Plausibilitaetsfenster fuer eine echte Zelle. BAT_ADC (GPIO35) ist input-only
-# und hat keinen internen Pulldown — ohne angeschlossenen Akku (z. B. reiner
-# USB-Betrieb) floatet der Pin und liefert Zufallswerte. Liegt die gemessene
-# Zellspannung ausserhalb dieses Fensters, gibt es keinen verwertbaren Akku ->
-# None ("unbekannt") statt eines irrefuehrenden 0-/Phantom-Prozentwerts.
-BATTERY_PLAUSIBLE_MIN_V = 3.0
-BATTERY_PLAUSIBLE_MAX_V = 4.35
 
 # Firmware-Version (mit Git-Tag/Release synchron halten) — im Status-Portal.
-VERSION = "v0.1.0"
+VERSION = "v0.2.0"
 
 _DEFAULTS = {
     "ap_password": "petriheil",
@@ -69,8 +62,16 @@ _DEFAULTS = {
     "ingest_url": "",             # optionaler Dev-Override; sonst aus tenant gebaut
     "device_id": "",
     "api_key": "",
-    "network_mode": "auto",
-    "measure_interval_s": 15 * 60,
+    # "ltem" statt "auto": auto laesst das Modem bei JEDEM Attach GSM + LTE-M +
+    # NB-IoT durchsuchen — 10-30 s Suchzeit pro Sendezyklus, reiner Akkuverlust.
+    # 1NCE laeuft in DE auf LTE-M (am Board verifiziert). Standorte ohne
+    # LTE-M-Abdeckung koennen im Portal auf "auto" zurueckstellen.
+    "network_mode": "ltem",
+    # Stuendlich messen, nach 4 Messungen senden (alle 4 h). Der teure Teil ist
+    # der Modem-Boot + Attach + TLS (~1.7 mAh pro Sendung, unabhaengig von der
+    # Anzahl Messwerte) — Batching ist DER Akku-Hebel. Das Dashboard zeigt
+    # trotzdem lueckenlose Stundenwerte, nur bis zu 4 h verzoegert.
+    "measure_interval_s": 60 * 60,
     "batch_size": 4,
     "gps_enabled": False,
     "sensors": [{"sensor_id": "temp-1", "type": "ds18b20", "pin": board.DEFAULT_ONEWIRE_PIN}],
@@ -120,8 +121,9 @@ def _save_state(state):
 def read_battery_percent():
     """Liest die Batteriespannung am Sense-Pin und gibt 0-100 % (oder None).
 
-    Lineare Naeherung zwischen BATTERY_EMPTY_V und BATTERY_FULL_V — bewusst grob,
-    der ESP32-ADC ist nicht praezise. Ohne angeschlossene Zelle ~0 %."""
+    Spannung -> Prozent ueber die Li-Ion-OCV-Kurve in batt.py — der ESP32-ADC
+    bleibt trotzdem grob, aber die Kurve verhindert die massive Ueberschaetzung
+    des Verbrauchs im oberen Bereich, die die alte lineare Naeherung hatte."""
     try:
         adc = machine.ADC(machine.Pin(board.BAT_ADC))
         try:
@@ -135,11 +137,10 @@ def read_battery_percent():
             time.sleep_ms(20)
         v_bat = (total / n) / 1_000_000 * BATTERY_DIVIDER
         # Kein plausibler Akku (USB-Betrieb / floatender Pin) -> unbekannt.
-        if not (BATTERY_PLAUSIBLE_MIN_V <= v_bat <= BATTERY_PLAUSIBLE_MAX_V):
+        if not batt.is_plausible(v_bat):
             log("Batterie: implausibel (%.2f V) -> kein Akku/USB" % v_bat)
             return None
-        pct = (v_bat - BATTERY_EMPTY_V) / (BATTERY_FULL_V - BATTERY_EMPTY_V) * 100
-        return int(max(0, min(100, round(pct))))
+        return batt.voltage_to_percent(v_bat)
     except (OSError, ValueError, AttributeError) as exc:
         log("Batterie-Lesefehler:", exc)
         return None
@@ -401,6 +402,14 @@ def maybe_run_portal(cfg):
 def _sleep(ms):
     """Log nach Flash sichern, dann Deep-Sleep (danach laeuft kein Code mehr)."""
     logbuf.flush()
+    # PWRKEY (GPIO4, RTC-faehig) im Deep-Sleep auf inaktiv (HIGH) festhalten.
+    # Ohne Hold floatet der Pin im Schlaf — PWRKEY ist ein TOGGLE, ein Glitch
+    # koennte das ausgeschaltete Modem wecken und es zoege dann 5-25 mA bis
+    # zum naechsten Wakeup. Modem.__init__ loest den Hold beim Aufwachen.
+    try:
+        machine.Pin(board.MODEM_PWRKEY, machine.Pin.OUT, value=1, hold=True)
+    except (TypeError, ValueError):
+        pass  # MicroPython-Build ohne hold-Support -> Verhalten wie bisher
     machine.deepsleep(ms)
 
 

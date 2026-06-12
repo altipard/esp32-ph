@@ -37,6 +37,7 @@ var firmwareOrder = []string{
 	"pure-min.css",
 	"logo.png",
 	"logbuf.py",
+	"batt.py",
 	"board.py",
 	"modem.py",
 	"sensors.py",
