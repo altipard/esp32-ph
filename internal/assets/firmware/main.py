@@ -512,7 +512,7 @@ if __name__ == "__main__":
         run()
     except Exception as exc:  # Absturz noch ins Log retten, dann kurz schlafen
         try:
-            log("CRASH:", exc)
+            log("CRASH:", repr(exc))  # repr: Typ sichtbar auch bei leerer Message
             logbuf.flush()
         except Exception:
             pass

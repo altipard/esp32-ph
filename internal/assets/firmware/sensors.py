@@ -75,8 +75,14 @@ def read_all(config):
             continue
         try:
             value = reader(entry)
-        except (OSError, ValueError) as exc:
-            log("Sensor-Fehler", sensor_id, ":", exc)
+        except Exception as exc:
+            # Isolationsgrenze: EIN flackernder Fuehler darf den Mess-Zyklus
+            # nie crashen. onewire.OneWireError (CRC-Fehler) erbt weder von
+            # OSError noch ValueError und kommt bei wackelndem DS18B20 oft mit
+            # leerer Message — ungefangen landet sie im Top-Handler (main.py),
+            # der dann nur "CRASH:" loggt, 60 s schlaeft und nie sendet.
+            # repr(exc) statt exc: macht den Typ sichtbar auch ohne Message.
+            log("Sensor-Fehler", sensor_id, ":", repr(exc))
             value = None
         if value is None:
             log("Sensor", sensor_id, "liefert keinen Wert")
